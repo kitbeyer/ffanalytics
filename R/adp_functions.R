@@ -321,7 +321,7 @@ get_adp <- function(sources = c("RTS", "CBS", "ESPN", "Yahoo", "NFL", "FFC"),
 #'
 #' This function scrapes ADP data from Fantasy Football Calculator
 #' @param format Indicates which league format data should be returned for.
-#' Should be one of \code{c("standard", "ppr", "2qb", "dynasty", "rookie")}
+#' Should be one of \code{c("standard", "half-ppr", "ppr", "2qb", "dynasty", "rookie")}
 #' @param pos indicates the position the data should be returned for. Should be
 #' one of \code{c("all", "qb", "rb", "wr", "te", "def", "pk")}
 #' @param season Indicates the season that data should be retuned for.
