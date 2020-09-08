@@ -327,7 +327,7 @@ get_adp <- function(sources = c("RTS", "CBS", "ESPN", "Yahoo", "NFL", "FFC"),
 #' @param season Indicates the season that data should be retuned for.
 #' @return A \link{data.frame} with the results.
 #' @export
-ffc_draft <- function(format=c("standard", "ppr", "2qb", "dynasty", "rookie"),
+ffc_draft <- function(format=c("standard", "half-ppr", "ppr", "2qb", "dynasty", "rookie"),
                       pos = c("all", "qb", "rb", "wr", "te", "def", "pk"),
                               season=2019){
 
