@@ -169,7 +169,14 @@ html_sites <- list(
   #### FantasyPros ####
   FantasyPros = list(
     base = "https://www.fantasypros.com/nfl/projections/",
-    get_path = function(season, week, position)paste0(tolower(position), ".php"),
+    get_path = function(season, week, position) {
+      if(week %in% 1:17) {
+        paste0(tolower(position), ".php?week=", week)
+      } else {
+        paste0(tolower(position), ".php")
+      }
+
+    },
     get_query = function(season, week, pos_id, ...){
       if(week == 0)
         return(list(week = "draft"))
@@ -206,7 +213,7 @@ html_sites <- list(
     get_query = function(season, week, pos_id, ...){
       query <- list()
       shark_segment <- function(season, week){
-        shark_season <- c("2017"= 586, "2018" = 618, "2019" = 650, "2020" = 682)
+        shark_season <- c("2017"= 586, "2018" = 618, "2019" = 650, "2020" = 682, "2021" = 714)
         segment <- shark_season[as.character(season)] + week + 9 * (week > 0)
         return(segment)
       }

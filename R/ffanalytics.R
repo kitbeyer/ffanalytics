@@ -1,15 +1,27 @@
-#' @import tidyverse httr janitor rvest glue
-#' @importFrom lubridate year
+#' @import dplyr tidyr purrr httr2 rvest rrapply
+#' @importFrom data.table fread rbindlist
+#' @importFrom readxl read_xlsx
+
 .onLoad <- function(libname, pkgname){
-  player_table <<- httr::GET("https://api.myfantasyleague.com/2020/export?TYPE=players&L=&APIKEY=&DETAILS=1&SINCE=&PLAYERS=&JSON=1") %>%
-    httr::content() %>% `[[`("players") %>% `[[`("player") %>%
-    purrr::map(tibble::as_tibble) %>%
-    dplyr::bind_rows() %>%
-    dplyr::filter(position %in% c("QB", "RB", "WR", "TE", "PK", "Def", "DE", "DT", "LB", "CB", "S")) %>%
-    dplyr::select(id, name, position, team, weight, draft_year, draft_team, draft_round, draft_pick, birthdate) %>%
-    tidyr::extract(name, c("last_name", "first_name"), "(.+),\\s(.+)") %>%
-    dplyr::mutate(birthdate = as.Date(as.POSIXct(as.numeric(birthdate), origin = "1970-01-01")),
-                  position = dplyr::recode(position, Def = "DST", PK = "K"),
-                  age = as.integer(lubridate::year(Sys.time()) - lubridate::year(birthdate)),
-                  exp = 2020 - as.integer(draft_year))
+  player_table = data.table::fread("https://s3.us-east-2.amazonaws.com/ffanalytics/packagedata/player_table.csv",
+                    colClasses = c("character", "character", "character", "character", "character",
+                                    "integer", "integer", "character", "integer", "integer",
+                                    "Date", "integer", "integer"),
+                    col.names = c("id", "last_name", "first_name", "position", "team", "weight",
+                                  "draft_year", "draft_team", "draft_round", "draft_pick", "birthdate",
+                                  "age", "exp"),
+                      sep = ",", skip = 0, data.table = FALSE, showProgress = FALSE)
+  player_table = dplyr::tibble(player_table)
+  environment(player_table) = asNamespace("ffanalytics")
+  assignInNamespace("player_table", player_table, ns = "ffanalytics")
+
+}
+
+.onAttach <- function(libname, pkgname) {
+  packageStartupMessage(
+    "Note: the ffanalytics package locally caches ADP & ECR data scrapes. Cached scrapes",
+    "\nolder than 8 hours are dropped (upon checking)",
+    "\n  - See ?clear_ffanalytics_cache() for how to manually clear the cache",
+    "\n  - Use list_ffanalytics_cache() to see what is currently cached"
+    )
 }

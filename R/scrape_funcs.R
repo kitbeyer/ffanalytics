@@ -16,82 +16,86 @@
 #' data.
 #' @export
 scrape_data <- function(
-  src = c("CBS", "ESPN", "FantasyData", "FantasyPros", "FantasySharks", "FFToday",
-          "FleaFlicker", "NumberFire", "Yahoo", "FantasyFootballNerd", "NFL",
-          "RTSports","Walterfootball"),
+  src = c("CBS", "ESPN", "FantasyPros", "FantasySharks", "FFToday",
+          "FleaFlicker", "NumberFire", "FantasyFootballNerd", "NFL",
+          "RTSports", "Walterfootball"),
   pos = c("QB", "RB", "WR", "TE", "K", "DST", "DL", "LB", "DB"),
-  season = 2020, week = 0){
+  season = NULL, week = NULL, ...){
 
-  if(missing(week))
-    week <- 0
-  src <- match.arg(src, several.ok = TRUE)
-  pos <- match.arg(pos, several.ok = TRUE)
+  if(is.null(season)) {
+    season = get_scrape_year()
+  }
+  if(is.null(week)) {
+    week = get_scrape_week()
+  }
 
-  if(any(src == "NumberFire") & any(c("DL", "LB", "DB") %in% pos))
-    pos <- c(pos, "IDP")
+  src = match.arg(src, several.ok = TRUE,
+                  c("CBS", "ESPN", "FantasyData", "FantasyPros", "FantasySharks", "FFToday",
+                    "FleaFlicker", "NumberFire", "FantasyFootballNerd", "NFL",
+                    "RTSports","Walterfootball"))
+  pos = match.arg(pos, several.ok = TRUE,
+                  c("QB", "RB", "WR", "TE", "K", "DST", "DL", "LB", "DB"))
 
-  if(any(src == "FleaFlicker") & "DL" %in% pos)
-    pos <- c(pos, "DE", "DT")
+  args = list(pos = pos, season = season, week = week)
+  additional_args = list(...)
+  args = c(args, additional_args)
+  args = args[nchar(names(args)) > 0]
 
-  if(any(src == "FleaFlicker") & "DB" %in% pos)
-    pos <- c(pos, "CB", "S")
 
-  names(pos) <- pos
-  src_data <- map(pos, ~ map(projection_sources[src], ~ .x)) %>% purrr::transpose() %>%
-    map( ~ imap(.x, ~ scrape_source(.x, season, week, .y))) %>%
-    purrr::transpose() %>% map(discard, is.null) %>% map(bind_rows, .id = "data_src")
+  # Running the sefl-contained scrapes (temporary, untill new scrapes are finalized)
+  l_selfcont = lapply(src, function(self_src) {
+    scrape_fun = get(paste0("scrape_", tolower(self_src)), mode = "function", envir = asNamespace("ffanalytics"))
+    fun_formals = formals(scrape_fun)
+    fun_args = args[names(args) %in% names(fun_formals)]
+    fun_args$pos = intersect(fun_args$pos, eval(fun_formals$pos))
 
-  if(any(names(src_data) == "IDP")){
-    idp_data <- filter(src_data$IDP, data_src == "NumberFire") %>%
-      split(.$pos)
-    for(p in names(idp_data)){
-      src_data[[p]] <- bind_rows(list(src_data[[p]], idp_data[[p]]))
+    if(week == 0 && !fun_formals$draft) {
+      message(paste0("\nDraft data not available for ", self_src))
+      return(NULL)
+    }
+    if(week > 0 && !fun_formals$weekly) {
+      message(paste0("\nWeekly data not available for ", self_src))
+      return(NULL)
+    }
+
+    scrape = tryCatch(
+      expr = {
+        do.call(scrape_fun, fun_args)
+        },
+      error = function(error) {
+        message(
+          paste0(
+            " Uh oh! Error with the ", self_src, " scrape.\n",
+            " To get a more specific error message, run:\n",
+            "   ffanalytics:::scrape_", tolower(self_src), "(",
+            "pos = ", capture.output(dput(pos)),
+            ", season = ", season, ", week = ", week, ")"
+            )
+          )
+        NULL
+        }
+      )
+
+    lapply(scrape, function(x) Filter(function(j) any(!is.na(j)), x)) # remove all NA columns
+  })
+
+  all_positions = unique(unlist(lapply(l_selfcont, names)))
+  l_out = vector("list", length(all_positions))
+  names(l_out) = all_positions
+
+  for(self_scr in l_selfcont) {
+    for(scr_pos in names(self_scr)) {
+      l_out[[scr_pos]] = bind_rows(l_out[[scr_pos]], self_scr[[scr_pos]])
     }
   }
 
+  l_out = l_out[setdiff(pos, c("IDP", "CB", "S", "DT", "DE"))]
+  l_out = Filter(Negate(is.null), l_out)
+  attr(l_out, "season") = season
+  attr(l_out, "week") = week
 
-  if(any(names(src_data) == "CB")){
-    src_data$DB <- bind_rows(src_data$DB, filter(src_data$CB, data_src == "FleaFlicker"))
-  }
-
-  if(any(names(src_data) == "S")){
-    src_data$DB <- bind_rows(src_data$DB, filter(src_data$S, data_src == "FleaFlicker"))
-  }
-
-  if(any(names(src_data) == "DE")){
-    src_data$DL <- bind_rows(src_data$DL, filter(src_data$DE, data_src == "FleaFlicker"))
-  }
-
-  if(any(names(src_data) == "DT")){
-    src_data$DL <- bind_rows(src_data$DL, filter(src_data$DT, data_src == "FleaFlicker"))
-  }
-
-  src_data <- map(src_data,
-                  ~ {if(any(names(.x) == "site_src")){
-                       mutate(.x, data_src = if_else(is.na(site_src), data_src, paste(data_src, site_src, sep = ": ")))
-                  } else {
-                      .x
-                    }}
-  )
-
-  src_data <- src_data[setdiff(pos, c("IDP", "CB", "S", "DT", "DE"))]
-  attr(src_data, "season") <- season
-  attr(src_data, "week") <- week
-
-  return(src_data)
+  l_out
 }
-
-#' Scrape data for a specific position from a single source
-#' @export
-scrape_source <- function(src, season, week, position){
-  src_type <- intersect(c("html_source", "json_source", "xlsx_source"), class(src))
-  cat("Scraping", position, "projections from \n", src$get_url(season, week, position), "\n")
-  src_res <- switch(src_type,
-                    "html_source" = src$open_session(season, week, position)$scrape(),
-                    src$scrape(season, week, position))
-  return(src_res)
-}
-
 
 
 

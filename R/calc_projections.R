@@ -5,51 +5,94 @@
 #' @param w The weights associated with each observation.
 #' @param na.rm If \code{TRUE}, then NA values will be removed.
 weighted.sd <- function(x, w, na.rm = FALSE){
+  w_zero = !(w <= 0 | is.na(w))
+  x_non_na = !is.na(x)
+  x = x[w_zero & x_non_na]
+  w = w[w_zero & x_non_na]
+
+  if (length(x) <= 1L) {
+    return(NA)
+  }
+
   sum.w <- sum(w, na.rm = na.rm)
   sum.w2 <- sum(w^2, na.rm = na.rm)
-  mean.w <- sum(x * w,na.rm = na.rm) / sum(w, na.rm = na.rm)
-  x.sd.w <- sqrt((sum.w / (sum.w^2 - sum.w2)) * sum(w * (x - mean.w)^2))
-  return(x.sd.w)
+  mean.w <- sum(x * w, na.rm = na.rm) / sum.w
+  sqrt((sum.w / (sum.w^2 - sum.w2)) * sum(w * (x - mean.w)^2))
+}
+
+#' Altered MAD function
+#'
+#' NA for length = 1 & an ignored weight function
+mad2 = function(x, center = median(x), constant = 1.4826, na.rm = FALSE,
+                low = FALSE, high = FALSE, w) {
+  if(length(x) %in% c(0L, 1L)) {
+    return(NA)
+  } else {
+    mad(x, center, constant, na.rm, low, high)
+  }
+}
+
+#' Weighted Harrell-Davis quantile estimator
+#'
+#' From: https://aakinshin.net/posts/weighted-quantiles/
+whdquantile <- function(x, w = NA, probs, na.rm) { #na.rm is ignored
+
+  cdf.gen <- function(n, p) {
+    function(cdf.probs) {
+      pbeta(cdf.probs, (n + 1L) * p, (n + 1L) * (1L - p))
+    }
+  }
+
+  w_zero = !(w <= 0 | is.na(w))
+  x_non_na = !is.na(x)
+  x = x[w_zero & x_non_na]
+  w = w[w_zero & x_non_na]
+
+  length_x = length(x)
+  length_w = length(w)
+  if (length_x <= 1L) {
+    return(NA)
+  }
+  if (length_w == 0L) {
+    w = rep(1L, length_x)
+  }
+  if (length_x != length_w) {
+    message("Length of x != length of w. NA returned")
+    return(NA)
+  }
+
+  nw <- sum(w)^2L / sum(w^2L) # Kish's effective sample size
+  idx <- order(x)
+  x <- x[idx]
+  w <- w[idx]
+
+  w <- w / sum(w)
+  cdf.probs <- cumsum(c(0, w))
+  names(probs) = sprintf("%1.0f%%", probs * 100)
+
+  vapply(probs, function(p) {
+    cdf <- cdf.gen(nw, p)
+    q <- cdf(cdf.probs)
+    w <- tail(q, -1L) - head(q, -1L)
+    sum(w * x)
+  }, numeric(1L))
+
 }
 
 #' Wilcox Location Parameter
 #'
 #' Modified function to calculate Wilcox' Location paramenter
-wilcox.loc <- function(vec, na.rm = FALSE){
-  n <- length(vec)
+wilcox.loc <- function(vec, na.rm = FALSE, w = NULL){
   # If number of observations is less than 2 then we just return mean as location estimate
-  if(n <= 2){
-    return(mean(vec, na.rm = na.rm))
+  if(length(vec) <= 2L){
+    return(mean.default(vec, na.rm = na.rm))
   }
-
-  # Calculating the paired avagerages
-  pairAvg <- sort(c(vec, combn(vec, 2, function(x)mean(x, na.rm = na.rm))))
-  return(median(pairAvg, na.rm = na.rm))
+  # Calculating the paired averages
+  pairAvg <- sort(c(vec, combn(vec, 2L, function(x) sum(x, na.rm = na.rm) / 2)))
+  median.default(pairAvg, na.rm = na.rm)
 }
 
-#' Cohen's d
-#'
-#' Function to calculate Cohen's D value when testing effect size
-cohens_d <- function(x, y, na.rm = TRUE) {
-  if(na.rm){
-    x <- x[!is.na(x)]
-    y <- y[!is.na(y)]
-  }
-  n.x <- length(x)- 1
-  n.y <- length(y)- 1
-  mean.diff  <- abs(mean(x) - mean(y))
-  if(n.x == 0 & n.y > 0) {
-    common.sd <- sqrt(n.y * var(y)/n.y)
-  } else if (n.x > 0 & n.y == 0){
-    common.sd <- sqrt(n.x * var(x)/n.x)
-  } else if (n.x > 0 & n.y  > 0) {
-    common.sd <- sqrt((n.x * var(x) + n.y * var(y))/(n.x + n.y))
-  } else {
-    common.sd <- sd(c(x, y)) / 2
-  }
 
-  return(mean.diff/common.sd)
-}
 
 #' Default Weights for Projection Sources
 #'
@@ -63,183 +106,9 @@ cohens_d <- function(x, y, na.rm = TRUE) {
 default_weights <- c(CBS = 0.344, Yahoo = 0.400,  ESPN = 0.329,  NFL = 0.329,
                     FFToday = 0.379, NumberFire = 0.322, FantasyPros = 0.000,
                     FantasySharks= 0.327, FantasyFootballNerd = 0.000,
-                    Walterfootball = 0.281, RTSports= 0.330,
+                    WalterFootball = 0.281, RTSports= 0.330,
                     FantasyData= 0.428, FleaFlicker = 0.428)
 
-# Helper functions to calculate the quantiles and standard deviations for the
-# source points. Used in the points_sd and confidence interval functions
-quant_funcs <- list(average = quantile, robust = quantile,
-                    weighted =  purrr::possibly(Hmisc::wtd.quantile, c(`5%` = NaN, `95%` = NaN)))
-quant_args <- list(list(probs = c(0.05, 0.95)),  list(probs = c(0.05, 0.95)),
-                   list(probs = c(0.05, 0.95), type = "i/n"))
-
-get_quant <- function(pts, wt)invoke_map(quant_funcs, quant_args, x = pts, na.rm = TRUE, weights = wt)
-
-sd_funcs <- list(average = function(x, w, na.rm)sd(x, na.rm = na.rm),
-                 robust = function(x, w, na.rm)mad(x, na.rm = na.rm),
-                 weighted = weighted.sd)
-sd_args <- list(list(na.rm = TRUE), list(na.rm = TRUE), list(na.rm = TRUE))
-get_sd <- function(pts, wt)invoke_map(sd_funcs, sd_args, x = pts, w = wt)
-
-
-#' Calculate Source Points
-#'
-#' Function to calculate the projected points for each source.
-#' @param data_result An output from the \link{scrape_data} function.
-#' @param scoring_rules The scoring rules to be used.
-source_points <- function(data_result, scoring_rules){
-  scoring_tbl <- make_scoring_tbl(scoring_rules)
-
-  long_result <- data_result %>%
-    stats_by_category() %>%
-    map(gather, "data_col", "stat_value", -c(id, data_src, pos)) %>%
-    bind_rows()
-
-  dst_pt_allow <- NULL
-
-  if("dst" %in% names(scoring_rules))
-    dst_pt_allow <- scoring_rules[[c("dst", "dst_pts_allowed")]]
-
-  dst_bracket <- is.null(dst_pt_allow) & !is.null(scoring_rules$pts_bracket)
-
-  dst_src <- long_result %>% slice(0) %>% add_column(points = 0)
-  if(dst_bracket){
-    dst_src <- long_result %>%  filter(data_col == "dst_pts_allowed") %>%
-      mutate(points = ffanalytics:::dst_points(stat_value, scoring$pts_bracket))
-  }
-
-  long_result %>%
-    inner_join(scoring_tbl, by = c("pos", "data_col")) %>%
-    mutate(points = stat_value * points)  %>%
-    bind_rows(dst_src) %>%
-    group_by(pos, data_src, id) %>%
-    summarise(points = sum(points, na.rm = TRUE)) %>% ungroup()
-}
-
-# Generate weights from a source points table if no weights are given
-weights_from_src <- function(src_pts, weights = NULL){
-  if(is.null(weights)){
-    weights <- default_weights[unique(src_pts$data_src)]
-  }
-
-  weights %>% tibble(data_src = names(.), weight = .)
-}
-
-#' Calculate Standard Deviations for Projected Points
-#'
-#' This function calculates the standard deviaion for projected points from
-#' different sources
-#' @param src_pts An output from the \link{source_points} function
-#' @param weights A named vector with the weights from each source.
-#' See \link{default_weights}
-points_sd <- function(src_pts, weights = NULL){
-
-  weight_tbl <- weights_from_src(src_pts, weights)
-
-  src_pts %>% inner_join(weight_tbl, by = "data_src") %>%
-    group_by(id) %>%
-    mutate(n_obs = n(),
-           weight = if_else(n_obs == 1 & weight == 0, 1, weight)) %>%
-    ungroup() %>% select(-n_obs) %>%
-    split(.$pos) %>% map(~ split(.x, .x$id)) %>%
-    modify_depth(2, ~ get_sd(.x$points, .x$weight)) %>% modify_depth(2, as.tibble) %>%
-    modify_depth(1, bind_rows, .id = "id") %>% bind_rows(.id = "pos") %>%
-    gather("avg_type", "sd_pts", -id, -pos)
-}
-
-#' Calculate the Upper and Lower Limits for Projected Points
-#'
-#' This function calculates the ceiling and floor for projected points from
-#' different sources based on quantiles
-#' @param src_pts An output from the \link{source_points} function
-#' @param weights A named vector with the weights from each source.
-#' See \link{default_weights}
-confidence_interval <- function(src_pts, weights = NULL){
-
-  weight_tbl <- weights_from_src(src_pts, weights)
-
-  src_pts %>% inner_join(weight_tbl, by = "data_src") %>%
-    group_by(id) %>%
-    mutate(n_obs = n(),
-           weight = if_else(n_obs == 1 & weight == 0, 1, weight)) %>%
-    ungroup() %>% select(-n_obs) %>%
-    split(.$pos) %>% map(~ split(.x, .x$id)) %>%
-    modify_depth(2, ~ get_quant(.x$points, .x$weight)) %>% modify_depth(3, t) %>%
-    modify_depth(3, as.tibble) %>% modify_depth(2, bind_rows, .id  = "avg_type") %>%
-    modify_depth(1, bind_rows, .id = "id") %>% bind_rows(.id = "pos") %>%
-    mutate(`5%` = ifelse(is.na(`5%`),` 5%`, `5%`)) %>% select(-` 5%`) %>%
-    rename(floor = "5%", ceiling = "95%")
-}
-
-#' Aggregate Projected Stats
-#'
-#' This function aggregates the projected stats collected from each source with
-#' the \link{scrape_data} function.
-#' @param data_result An output from the \link{scrape_data} function.
-#' @param src_weights A named vector with the weights from each source.
-#' See \link{default_weights}
-#' @export
-aggregate_stats <- function(data_result, src_weights = NULL){
-
-  if(is.null(src_weights)){
-    data_src <- data_result %>% map(`[[`, "data_src") %>% reduce(union)
-    src_weights <- default_weights[data_src]
-  }
-
-  weight_tbl <- src_weights %>% tibble(data_src = names(.), weight = .)
-
-  data_result %>% stats_by_category() %>%
-    map(inner_join, weight_tbl, by = "data_src") %>%
-    map(gather, "data_col", "stat_value",
-        -c(id, data_src, pos, weight)) %>%
-    bind_rows() %>% group_by(pos, id, data_col) %>%
-    summarise(robust = wilcox.loc(stat_value, na.rm = TRUE),
-              average = mean(stat_value, na.rm = TRUE ),
-              weighted = weighted.mean(stat_value, w = weight, na.rm = TRUE)) %>%
-    gather("avg_type", "stat_value", -c(id, pos, data_col))
-}
-
-#' Calculate Projected Points
-#'
-#' This function calculates the projected points for each player based on the
-#' aggregated stats from the \link{aggregate_stats} function. The resulting table
-#' contains the projected points, the position rank and the points drop-off for
-#' each player.
-#' @param agg_stats An output from the \link{aggregate_stats} function
-#' @param scoring_rules The scoring rules to be used.
-projected_points <- function(agg_stats, scoring_rules){
-  scoring_tbl <- make_scoring_tbl(scoring_rules)
-
-  dst_pt_allow <- NULL
-
-  if("dst" %in% names(scoring_rules))
-    dst_pt_allow <- scoring_rules[[c("dst", "dst_pts_allowed")]]
-
-  dst_bracket <- is.null(dst_pt_allow) & !is.null(scoring_rules$pts_bracket)
-
-  dst_src <- agg_stats %>% slice(0) %>% add_column(points = 0)
-  if(dst_bracket){
-    dst_src <- agg_stats %>%  filter(data_col == "dst_pts_allowed") %>%
-      mutate(points = ffanalytics:::dst_points(stat_value, scoring_rules$pts_bracket))
-  }
-
-  dst_agg <- dst_src %>% slice(0)
-
-  if(dst_bracket){
-    dst_agg <- agg_stats %>%  filter(data_col == "dst_pts_allowed") %>%
-      mutate(points = ffanalytics:::dst_points(stat_value, scoring_rules$pts_bracket))
-  }
-  agg_stats  %>%
-    inner_join(scoring_tbl, by = c("pos", "data_col")) %>%
-    mutate(points = stat_value * points) %>%
-    bind_rows(dst_agg) %>%
-    group_by(pos, avg_type, id) %>%
-    summarise(points = if_else(all(is.na(points)), NA_real_, sum(points, na.rm = TRUE))) %>%
-    mutate(pos_rank = dense_rank(-points),
-           drop_off =  points - (lead(points, order_by = pos_rank) +
-                                   lead(points, 2, order_by = pos_rank)) /2 ) %>%
-    ungroup()
-}
 
 
 #' Default VOR Baseline
@@ -249,53 +118,91 @@ projected_points <- function(agg_stats, scoring_rules){
 #' \code{c(QB = 13, RB = 35, WR = 36, TE = 13, K = 8, DST = 3, DL = 10, LB = 10, DB = 10)}
 default_baseline <- c(QB = 13, RB = 35, WR = 36, TE = 13, K = 8, DST = 3, DL = 10, LB = 10, DB = 10)
 
-#' Calculate VOR
-#'
-#' This function calculates the VOR based on an output from the \link{projected_points}
-#' and if floor or ceiling VOR is requested with floor and ceiling added from the
-#' \link{confidence_interval} function
-#' @param points_table An output from the \link{projected_points} function and merged
-#' with output from the the \link{projected_points} function and merged if floor or ceiling vor
-#' is requested
-#' @param vor_baseline The VOR Baseline to be used. If omitted then the
-#' \link{default_baseline} will be used
-#' @param vor_var One of \code{c("points", "floor", "ceiling")} indicating which
-#' basis is used for the vor calculation
-set_vor <- function(points_table, vor_baseline = NULL, vor_var = c("points", "floor", "ceiling")){
-  if(is.null(vor_baseline))
-    vor_baseline <- default_baseline
 
-  vor_var <- match.arg(vor_var)
 
-  vor_tbl <- select(points_table, "id", "pos", vor_var) %>%
-    rename(vor_var = !!vor_var) %>% group_by(pos) %>%
-    mutate(vor_rank = dense_rank(-vor_var), vor_base = vor_baseline[pos]) %>%
-    filter(vor_rank >= vor_base - 1 &  vor_rank <= vor_base + 1)  %>%
-    summarise(vor_base = mean(vor_var)) %>%  ungroup() %>%
-    select(pos, vor_base) %>% inner_join(points_table, by = c("pos")) %>%
-    rename(vor_var = !!vor_var) %>%
-    mutate(vor = vor_var - vor_base,
-           rank = dense_rank(-vor), !!vor_var := vor_var) %>%
-    select(id, pos, vor, rank) %>% rename_if(is.numeric, funs(paste(vor_var, ., sep = "_"))) %>%
-    ungroup()
-
-  return(vor_tbl)
+score_pts_bracket = function(points, pts_bracket) {
+  criteria = vapply(pts_bracket, `[[`, numeric(1L), 1L)
+  vals = vapply(pts_bracket, `[[`, numeric(1L), 2L)
+  thresh_idx = t(vapply(points, `<=`, logical(length(criteria)), criteria))
+  vals[max.col(thresh_idx, "first")]
 }
 
-#' Calculate VOR for Points, Ceiling and Floor
-#'
-#' This function calculates VOR for projected points as well as the floor and
-#' ceiling values.
-#' @param tbl The output from the \link{projected_points} function that has
-#' been merged with the output from  he \link{confidence_interval} function
-#' @param vor_baseline The VOR baseline values to be used. If omitted then the
-#' \link{default_baseline} will be used
-add_vor <- function(tbl, vor_baseline = NULL){
-  accumulate(c("points", "floor", "ceiling"),
-             ~ inner_join(.x, set_vor(.x, vor_baseline, vor_var = .y),
-                          by = c("id", "pos")),
-             .init = tbl)[[4]]
+
+score_dst_pts_allowed = function(data_result, pts_bracket) {
+  week = attr(data_result, "week")
+  year = attr(data_result, "season")
+  df = data_result[["DST"]]
+  na_idx = is.na(df$dst_pts_allowed)
+
+  if(year >= 2021) {
+    n_games = 17L
+  } else {
+    n_games = 16L
+  }
+
+  if(week == 0) {
+    set.seed(1L)
+
+    ids_idx = coalesce(
+      match(df$id[!na_idx], pts_bracket_coefs$id),
+      match(df$id[!na_idx], pts_bracket_coefs$nfl_id)
+    )
+
+    ppg = df$dst_pts_allowed[!na_idx] / n_games
+    team = pts_bracket_coefs$team[ids_idx]
+    idx = match(team, pts_bracket_coefs$team)
+    ppg_sd = pts_bracket_coefs$Intercept[idx] + (pts_bracket_coefs$season_mean[1] * ppg)
+
+    game_l = Map(function(x, y) {
+      season_games = round(rnorm(17, x, y))
+      season_games = replace(season_games, season_games < 0, 0)
+      score_pts_bracket(season_games, pts_bracket)
+    }, ppg, ppg_sd)
+    df$dst_pts_allowed[!na_idx] = vapply(game_l, sum, numeric(1L))
+  } else {
+    df$dst_pts_allowed[!na_idx] = score_pts_bracket(df$dst_pts_allowed, pts_bracket)
+  }
+  df$dst_pts_allowed
 }
+
+source_points = function(data_result, scoring_rules, return_data_result = FALSE) {
+
+  year = attr(data_result, "season")
+  week = attr(data_result, "week")
+
+  scoring_cleaned = make_scoring_tables(scoring_rules)
+  scoring_tables = scoring_cleaned$scoring_tables
+  pts_bracket = scoring_cleaned$pts_bracket
+
+  # Scoring the points brackets
+  data_result$DST$dst_pts_allowed = score_dst_pts_allowed(data_result, pts_bracket)
+
+  l_raw_points = lapply(names(data_result), function(pos) {
+    scoring_table = scoring_tables[[pos]]
+    cols = intersect(lapply(data_result, names)[[pos]], scoring_table$column) # grabbing scoring columns
+    if(length(cols) > 0) {
+      scored_vals = mapply(`*`, data_result[[pos]][cols], scoring_table[match(cols, scoring_table$column), ]$val)
+      rowSums(scored_vals, na.rm = TRUE)
+    } else {
+      NA
+    }
+  })
+  names(l_raw_points) = names(data_result)
+  data_result = Map(cbind, data_result, "raw_points" = l_raw_points)
+
+  if(return_data_result) {
+    attr(data_result, "season") = year
+    attr(data_result, "week") = week
+    data_result
+  } else {
+    data_result = lapply(data_result, `[`, c("pos", "data_src", "id", "raw_points"))
+    dplyr::bind_rows(data_result) %>%
+      dplyr::arrange(pos, id, data_src) %>%
+      dplyr::as_tibble()
+  }
+}
+
+
 
 #' Default Threshold Values for Tiers
 #'
@@ -304,45 +211,6 @@ add_vor <- function(tbl, vor_baseline = NULL){
 #' \code{c(QB = 1, RB = 1, WR = 1, TE = 1, K = 1, DST = 0.1, DL = 1, DB = 1, LB = 1)}
 default_threshold <-  c(QB = 1, RB = 1, WR = 1, TE = 1, K = 1, DST = 0.1, DL = 1, DB = 1, LB = 1)
 
-#' Determine Tiers by Position
-#'
-#' This function determines tiers for each position by applying Cohen's D effect
-#' size
-#' @param data_tbl An output from the \link{projected_points} function
-#' @param d_threshold THe thresholds to use when applying Cohens'd D function to
-#' determine the tiers. If omitted then the \link{default_threshold} will be used.
-#' @param src_points An output from the \link{source_points} function
-set_tiers <- function(data_tbl, d_threshold = NULL, src_points){
-  if(is.null(d_threshold))
-    d_threshold <- default_threshold
-
-  tier_tbl <- data_tbl %>% filter(pos %in% names(d_threshold)) %>%
-    mutate(dthres = d_threshold[pos], tier = ifelse(pos_rank == 1, 1L, NA))
-
-  repeat{
-    before_na <- sum(is.na(tier_tbl$tier))
-    tier_tbl <-
-      tier_tbl %>% group_by(pos) %>% filter(tier == tier[which.max(tier)]) %>%
-      summarise(tier_id = first(id, order_by = -points),
-                cur_tier = as.integer(max(tier, na.rm = TRUE)),
-                dthres= max(dthres, na.rm = TRUE)) %>%
-      inner_join(tier_tbl %>% group_by(pos) %>% filter(is.na(tier)) %>%
-                   summarise(max_id = first(id, order_by = -points)), by = "pos") %>%
-      group_by(pos) %>%
-      mutate(d_val = cohens_d(src_points[src_points$id == tier_id,]$points,
-                              src_points[src_points$id == max_id,]$points),
-             tier = ifelse(d_val > dthres, cur_tier + 1L, cur_tier)) %>%
-      select(pos, id = max_id, new_tier = tier) %>% right_join(tier_tbl, by = c("pos", "id")) %>%
-      mutate(tier = ifelse(is.na(tier) & !is.na(new_tier), new_tier, tier)) %>%
-      select(-new_tier)
-
-    after_na <- sum(is.na(tier_tbl$tier))
-    if(before_na == after_na | after_na == 0)
-      break
-  }
-
-  tier_tbl %>% select(-dthres) %>% ungroup()
-}
 
 #' Create a Projections Table
 #'
@@ -361,86 +229,264 @@ set_tiers <- function(data_tbl, d_threshold = NULL, src_points){
 #' @param tier_thresholds The threshold values to be used when determining tiers.
 #' If omitted then the \link{default_threshold} will be used.
 #' @export
-projections_table <- function(data_result, scoring_rules = NULL, src_weights = NULL,
-                              vor_baseline = NULL, tier_thresholds = NULL){
+projections_table = function(data_result, scoring_rules = NULL, src_weights = NULL,
+                              vor_baseline = NULL, tier_thresholds = NULL,
+                              avg_type = c("average", "robust", "weighted"),
+                              return_raw_stats = FALSE) {
 
-    season <- attr(data_result, "season")
-    week <- attr(data_result, "week")
-
-    data_result <- purrr:::keep(data_result, ~ nrow(.) > 0) %>%
-      `attr<-`(which = "season", season) %>%
-      `attr<-`(which = "week", week)
-
-    if(is.null(scoring_rules))
-    scoring_rules <- scoring
-
-  if(scoring_rules$rec$all_pos){
-    lg_type <- scoring_rules$rec$rec %>% rep(length(data_result)) %>%
-      `names<-`(names(data_result)) %>%
-      map_chr(~ case_when(.x > 0.5 ~ "PPR", .x > 0  ~ "Half", TRUE ~ "Std"))
-  } else {
-    lg_type <- map(scoring_rules$rec[-which(names(scoring_rules$rec) == "all_pos")], `[[`, "rec") %>%
-      purrr:::keep(~ !is.null(.x)) %>%
-      map_chr(~ case_when(.x > 0.5 ~ "PPR", .x > 0  ~ "Half", TRUE ~ "Std"))
-
-    lg_type[setdiff(names(data_result), names(lg_type))] < "Std"
+  # Filling in missing arguments
+  if(is.null(scoring_rules)) {
+    scoring_rules = scoring
+  }
+  if(is.null(src_weights)) {
+    src_weights = default_weights
+  }
+  if(is.null(vor_baseline)) {
+    vor_baseline = default_baseline
+  }
+  if(is.null(tier_thresholds)) {
+    tier_thresholds = default_threshold
   }
 
-  data_list <- invoke_map(list(src_pts = source_points, agg_stats = aggregate_stats),
-                          list(list(data_result = data_result, scoring_rules = scoring_rules),
-                               list(data_result = data_result, src_weights = src_weights)))
+  # Grabbing attributes
+  season = attr(data_result, "season")
+  week = attr(data_result, "week")
 
-  pts_uncertainty <- invoke_map(list(points_sd, confidence_interval),
-                                src_pts = data_list$src_pts, weights = src_weights) %>%
-    reduce(inner_join, by = c("pos", "id","avg_type"))
+  # Computing league type
+  if(scoring_rules$rec$all_pos){
+    if(is.null(scoring_rules$rec$rec)) {
+      obj_name = deparse(substitute(scoring_rules))
+      scoring_rules$rec$rec = 0L
+      message(paste0("Note: ", obj_name, "$rec$rec not specified. Default value is 0 (i.e., 0 PPR)"))
+    }
+    lg_type = rep(scoring_rules$rec$rec, length(data_result))
+    lg_type = dplyr::case_when(lg_type > .5 ~ "PPR",
+                               lg_type > 0 ~ "Half",
+                               TRUE ~ "Std")
+    names(lg_type) = names(data_result)
+  } else {
+    lg_type = lapply(scoring_rules$rec[names(scoring_rules$rec) != "all_pos"], `[[`, "rec")
+    lg_type = Filter(Negate(is.null), lg_type)
+    lg_type = vapply(lg_type, function(x) if(x > .5) "PPR" else if(x > 0) "Half" else "Std", character(1L))
+    lg_type[setdiff(names(data_result), names(lg_type))] <- "Std"
+  }
 
-  out_df<- data_list$agg_stats %>%
-    projected_points(scoring_rules) %>%
-    inner_join(pts_uncertainty, by = c("pos", "id","avg_type")) %>%
-    group_by(avg_type) %>%
-    set_tiers(tier_thresholds, data_list$src_pts ) %>%
+
+  # Setting up the scoring table ----
+  scoring_objs = make_scoring_tables(scoring_rules)
+  scoring_l = scoring_objs$scoring_tables
+  l_pts_bracket = scoring_objs$pts_bracket
+
+  # Adding weight and removing empty id's
+  data_result[] = lapply(data_result, function(df) {
+    df = df[!is.na(df$id), ]
+    df$weights = src_weights[df$data_src]
+    df
+  })
+
+  # Imputing values ----
+  data_result[] = impute_via_rates_and_mean(data_result, scoring_objs)
+  data_result = impute_bonus_cols(data_result, scoring_objs$scoring_tables)
+
+  # To return the aggregataed stats instead of the fantasy points
+  if(return_raw_stats) {
+
+    df_l = sapply(names(data_result), function(pos) {
+      df = group_by(data_result[[pos]], id)
+      scoring_table = scoring_l[[pos]]
+      cols = intersect(names(df), scoring_table$column[scoring_table$val != 0])
+      l_avg_types = vector("list", length(avg_type))
+      names(l_avg_types) = avg_type
+
+      # Removing one-only source id's
+      df = df %>%
+        filter(n() > 1)
+
+      for(type in avg_type) {
+
+        # Setting up avg_type summary function
+        if(type == "average") {
+          fun_avg = mean.default
+          fun_sd = function(x, na.rm = FALSE, w) sd(x, na.rm)
+          fun_quan = quantile
+        } else if(type == "robust") {
+          fun_avg = wilcox.loc
+          fun_sd = mad2
+          fun_quan = quantile
+        } else if(type == "weighted") {
+          fun_avg = weighted.mean
+          fun_sd = weighted.sd
+          fun_quan = whdquantile
+        }
+
+        l_avg_types[[type]] = lapply(cols, function(col) {
+
+          col_sym = as.symbol(col)
+
+          out = df %>%
+            summarise(points = fun_avg(!!col_sym, na.rm = TRUE, w = weights),
+                      sd = fun_sd(!!col_sym, na.rm = TRUE, w = weights))
+
+          names(out)[-1] = sub("_points", "", paste0(col, "_", names(out)[-1]))
+          out
+        })
+
+        l_avg_types[[type]] = Reduce(function(x, y) left_join(x, y, "id") , l_avg_types[[type]])
+
+      }
+
+      df["id"] %>%
+        filter(!duplicated(id)) %>%
+        left_join(bind_rows(l_avg_types, .id = "avg_type"), "id")
+
+    })
+
+    return(bind_rows(df_l, .id = "position"))
+
+  }
+
+  # Scoring sources / totaling sources
+  data_result[] = source_points(data_result, scoring_rules, return_data_result = TRUE)
+
+  l_avg_types = vector("list", length(avg_type))
+  names(l_avg_types) = avg_type
+
+  # Calculating totals for each avg_type
+  for(type in avg_type) {
+
+    # Setting up avg_type summary function
+    if(type == "average") {
+      fun_avg = mean.default
+      fun_sd = function(x, na.rm = FALSE, w) sd(x, na.rm)
+      fun_quan = quantile
+    } else if(type == "robust") {
+      fun_avg = wilcox.loc
+      fun_sd = mad2
+      fun_quan = quantile
+    } else if(type == "weighted") {
+      fun_avg = weighted.mean
+      fun_sd = weighted.sd
+      fun_quan = whdquantile
+    }
+
+    l_avg_types[[type]] = sapply(names(data_result), function(pos) {
+
+      df = data_result[[pos]] %>%
+        summarise(pos = !!pos,
+                  points = fun_avg(raw_points, na.rm = TRUE, w = weights),
+                  sd_pts = fun_sd(raw_points, na.rm = TRUE, w = weights),
+                  drop_quantile = list(fun_quan(raw_points, c(.05, .95), na.rm = TRUE, w = weights)),
+                  floor = drop_quantile[[1]][1],
+                  ceiling = drop_quantile[[1]][2]) %>%
+        select(-drop_quantile) %>%
+        filter(points > 0 & is.finite(points)) %>%
+        arrange(points)
+
+      pts_sd = median.default(df$sd_pts, na.rm = TRUE)
+      tier_thresh = tier_thresholds[pos]
+
+
+      df %>%
+        mutate(pos_rank = dense_rank(-points),
+               dropoff = c(0, diff(points))) %>%
+        arrange(desc(points)) %>%
+        mutate(tier = 1 + trunc((cumsum(dropoff) - dropoff[1]) / (pts_sd * tier_thresh)),
+               tier = dense_rank(tier))
+
+    }, simplify = FALSE)
+
+
+  }
+
+  out = bind_rows(lapply(l_avg_types, bind_rows, .id = "pos"), .id = "avg_type")
+
+  # Adding VOR and rank
+  out$temp_vor_pos = vor_baseline[out$pos]
+
+  out = out %>%
+    group_by(avg_type, pos) %>%
+    mutate(temp_floor_rank = dense_rank(-floor),
+           temp_ceiling_rank = dense_rank(-ceiling),
+           temp_vor_ref_points = points[which.max(pos_rank == temp_vor_pos)], # which.max in-case there are NA ranks
+           points_vor = points - temp_vor_ref_points,
+           temp_vor_ref_floor = floor[which.max(temp_floor_rank == temp_vor_pos)],
+           floor_vor = floor - temp_vor_ref_floor,
+           temp_vor_ref_ceiling = ceiling[which.max(temp_ceiling_rank == temp_vor_pos)],
+           ceiling_vor = ceiling - temp_vor_ref_ceiling) %>%
+    ungroup(pos) %>%
+    mutate(rank = dense_rank(-points_vor),
+           floor_rank = dense_rank(-floor_vor),
+           ceiling_rank = dense_rank(-ceiling_vor)) %>%
+    select(avg_type, id, pos, points, sd_pts, dropoff, floor, ceiling, points_vor,
+           floor_vor, ceiling_vor, rank, floor_rank, ceiling_rank, pos_rank, tier) %>%
     ungroup()
 
-  if(attr(data_result, "week") == 0){
-    out_df <- out_df %>% split(.$avg_type) %>%
-      map(add_vor, vor_baseline = vor_baseline) %>% bind_rows() %>%
-      rename(rank = points_rank)
-  }
-
-  out_df %>%
-    `attr<-`(which = "season", attr(data_result, "season")) %>%
-    `attr<-`(which = "week", attr(data_result, "week")) %>%
-    `attr<-`(which = "lg_type", lg_type)
+  attr(out, "season") = season
+  attr(out, "week") = week
+  attr(out, "lg_type") = lg_type
+  out
 }
 
 #' Add ECR to the Projection Table
 #'
-#' This function will add the ECR values to the projetions table generated from
+#' This function will add the ECR values to the projections table generated from
 #' the \link{projections_table} function. It will add the positional ECR, the
 #' standard deviation for the positional ECR, and if seasonal data also the
-#' overal ECR value
+#' overall ECR value
 #' @param projection_table An output from the \link{projections_table} function.
 #' @export
 add_ecr <- function(projection_table){
   lg_type <- attr(projection_table, "lg_type")
   season <- attr(projection_table, "season")
   week <- attr(projection_table, "week")
-  ecr_pos <- lg_type %>%
-    imap(~ scrape_ecr(rank_period = ifelse(week == 0, "draft", "week"),
-                      position = .y, rank_type = .x)) %>%
-    map(select, id, pos_ecr = avg, sd_ecr = std_dev) %>% bind_rows()
+  message("Scraping ECR data (w/ 2 second delay between pages if not cached)")
 
-  projection_table <- left_join(projection_table, ecr_pos, by = "id")
-  if(week == 0){
-    lg_ov <- ifelse(any(lg_type == "PPR"), "PPR", ifelse(any(lg_type == "Half"), "Half", "Std"))
-    ecr_overall <- scrape_ecr(rank_period = "draft", rank_type = lg_ov) %>%
-      select(id, ecr = avg)
-    projection_table <- left_join(projection_table, ecr_overall, by = "id")
+  if(week == 0) {
+    rank_per = "draft"
+  } else {
+    rank_per = "week"
   }
-  projection_table  %>%
-    `attr<-`(which = "season", season) %>%
-    `attr<-`(which = "week", week) %>%
-    `attr<-`(which = "lg_type", lg_type)
+
+  if(week == 0) {
+    if(any(lg_type == "PPR")) {
+      lg_ov = "PPR"
+    } else if(any(lg_type == "Half")) {
+      lg_ov = "Half"
+    } else {
+      lg_ov = "Std"
+    }
+
+    ecr_overall = scrape_ecr(rank_period = "draft", rank_type = lg_ov, position = "Overall") %>%
+      dplyr::select(id, overall_ecr = avg)
+    projection_table = dplyr::left_join(projection_table, ecr_overall, by = "id")
+  }
+
+  scraped_ecr = vector("list", length(lg_type))
+  for(i in seq_along(lg_type)) {
+    cached_objects = names(list_ffanalytics_cache(TRUE)$object)
+    req_obj = paste0(
+      "ecr_", rank_per, "_",
+      tolower(names(lg_type)[i]), "_",
+      tolower(lg_type[i]), ".rds"
+      )
+    if(!req_obj %in% cached_objects) {
+      Sys.sleep(2)
+    }
+    scraped_ecr[[i]] = scrape_ecr(rank_period = rank_per,
+                                  position = names(lg_type)[i],
+                                  rank_type = lg_type[i])
+
+  }
+  pos_ecr = dplyr::bind_rows(scraped_ecr) %>%
+    dplyr::select(id, pos_ecr = avg, sd_ecr = std_dev)
+
+  projection_table = dplyr::left_join(projection_table, pos_ecr, by = "id")
+
+  attr(projection_table, "lg_type") = lg_type
+  attr(projection_table, "season") = season
+  attr(projection_table, "week") = week
+
+  projection_table
 }
 
 #' Add ADP to the Projections Table
@@ -450,26 +496,34 @@ add_ecr <- function(projection_table){
 #' specfied, and the difference between the overall rank and ADP
 #' @param projection_table An output from the \link{projections_table} function
 #' @param sources Which ADP sources should be added. should be one or more of
-#' \code{c("RTS", "CBS", "ESPN", "Yahoo", "NFL", "FFC")}
+#' \code{c("RTS", "CBS", "MFL", "Yahoo", "NFL", "FFC")}
 #' @export
 add_adp <- function(projection_table,
-                    sources = c("RTS", "CBS", "ESPN", "Yahoo", "NFL", "FFC")){
+                    sources = c("RTS", "CBS", "Yahoo", "NFL", "FFC", "MFL")){
 
-  sources <- match.arg(sources, several.ok = TRUE)
+  sources <- match.arg(sources, c("RTS", "CBS", "Yahoo", "NFL", "FFC", "MFL"), several.ok = TRUE)
 
   lg_type <- attr(projection_table, "lg_type")
   season <- attr(projection_table, "season")
   week <- attr(projection_table, "week")
 
-  if (week != 0){
+  if(week != 0) {
     warning("ADP data is not available for weekly data", call. = FALSE)
     return(projection_table)
   }
-  adp_tbl <- get_adp(sources, type = "ADP") %>% select(1, length(.)) %>%
-    rename_at(length(.), function(x){return("adp")})
+  message("Scraping ADP data")
+
+  adp_tbl <- get_adp(sources, metric = "adp")
+
+  if(ncol(adp_tbl) == 2) {
+    names(adp_tbl)[2] = "adp"
+  } else {
+    adp_tbl = adp_tbl %>%
+      dplyr::select(id, adp = adp_avg, adp_sd)
+  }
 
   projection_table <- left_join(projection_table, adp_tbl, by = "id") %>%
-    mutate(adp_diff = rank - adp)
+    dplyr::mutate(adp_diff = rank - adp)
 
   projection_table  %>%
     `attr<-`(which = "season", season) %>%
@@ -486,9 +540,9 @@ add_adp <- function(projection_table,
 #' \code{c("RTS", "ESPN", "Yahoo", "NFL")}
 #' @export
 add_aav <- function(projection_table,
-                    sources = c("RTS", "ESPN", "Yahoo", "NFL")){
+                    sources = c("RTS", "ESPN", "Yahoo", "NFL", "MFL")) {
 
-  sources = match.arg(sources, several.ok = TRUE)
+  sources = match.arg(sources, c("RTS", "ESPN", "Yahoo", "NFL", "MFL"), several.ok = TRUE)
 
   lg_type <- attr(projection_table, "lg_type")
   season <- attr(projection_table, "season")
@@ -498,57 +552,74 @@ add_aav <- function(projection_table,
     warning("AAV data is not available for weekly data", call. = FALSE)
     return(projection_table)
   }
-  adp_tbl <- get_adp(sources, type = "AAV") %>% select(1, length(.)) %>%
-    rename_at(length(.), function(x){return("aav")})
+  message("Scraping AAV Data")
+  adp_tbl <- get_adp(sources, metric = "aav")
 
-  projection_table <- left_join(projection_table, adp_tbl, by = "id")
-  
+  if(ncol(adp_tbl) == 2) {
+    names(adp_tbl)[2] = "aav"
+  } else {
+    adp_tbl = adp_tbl %>%
+      dplyr::select(id, aav = aav_avg, aav_sd)
+  }
+
+  projection_table <- dplyr::left_join(projection_table, adp_tbl, by = "id")
+
   projection_table  %>%
     `attr<-`(which = "season", season) %>%
     `attr<-`(which = "week", week) %>%
     `attr<-`(which = "lg_type", lg_type)
 }
 
-#' Risk calculation based on two variables
+
+#' Uncertainty calculation
 #'
-#' Calculation of risk is done by scaling the standard deviation variables
-#' passed and averaging them before returning a measure with mean 5 and standard
-#' deviation of 2
-calculate_risk <- function(var1, var2){
-  var1 <- as.numeric(var1)
-  var2 <- as.numeric(var2)
-  Z_var1 <- scale(var1)
-  Z_var2 <- scale(var2)
+#' Calculation of uncertainty returns a value from 1 to 99 where higher values
+#' indicate more uncertainty (i.e., more variability).
+calculate_uncertainty <- function(..., percentage = TRUE) {
 
-  Z_var1[is.na(Z_var1)] <- Z_var2[is.na(Z_var1)]
-  Z_var2[is.na(Z_var2)] <- Z_var1[is.na(Z_var2)]
+  vars_list = list(...)
+  vars_m = do.call(cbind, vars_list)
 
-  risk_value <- 2 * scale(rowMeans(data.frame(Z_var1, Z_var2), na.rm=TRUE)) + 5
+  mean_risk <- scale(rowMeans(scale(vars_m), na.rm = TRUE))[, 1]
 
-  return(risk_value)
+  if(percentage) {
+    out = round(percent_rank(mean_risk), 2)
+    out[out <= .01] = .01
+    out[out >= .99] = .99
+    out
+  } else {
+    mean_risk[is.na(mean_risk)] <- NA
+    mean_risk
+  }
 
 }
 
-#' Add calculated risk to the table
+#' Add uncertainty to the table
 #'
-#' Calculation of risk is done by scaling the standard deviation variables
-#' passed and averaging them before returning a measure with mean 5 and standard
-#' deviation of 2
+#' Calculation of uncertainty is done by scaling the standard deviation
+#' variables, averaging them, and then creating a within-position percentile
+#' rank ranging from 1 to 99. A score of 1 indicates there is very little
+#' uncertainty (low standard deviation) and a score of 99 indicates there is
+#' a large degree of uncertainty
+#'
+#' A low score means there is general agreement among experts and projections.
+#' A high score indicates there is a lot of variability in rankings and/or
+#' projections. By default `add_uncertainty()` uses `sd_pts` and `sd_ecr` to
+#' compute uncertantity.
 #' @export
-add_risk <- function(projection_table){
+add_uncertainty <- function(projection_table){
 
-  lg_type <- attr(projection_table, "lg_type")
-  season <- attr(projection_table, "season")
-  week <- attr(projection_table, "week")
+  attr_season = attr(projection_table, "season")
+  attr_week = attr(projection_table, "week")
+  attr_lg_type = attr(projection_table, "lg_type")
 
   projection_table %>%
-    group_by(pos) %>%
-    # Calculate Risk values
-    mutate(risk = calculate_risk(sd_pts, sd_ecr)) %>%
-    ungroup() %>%
-    `attr<-`(which = "season", season) %>%
-    `attr<-`(which = "week", week) %>%
-    `attr<-`(which = "lg_type", lg_type)
+    dplyr::group_by(pos) %>%
+    dplyr::mutate(uncertainty = calculate_uncertainty(sd_pts, sd_ecr)) %>%
+    dplyr::ungroup() %>%
+    `attr<-`("season", attr_season) %>%
+    `attr<-`("week", attr_week) %>%
+    `attr<-`("lg_type", attr_lg_type)
 }
 
 
@@ -561,9 +632,20 @@ add_player_info <- function(projection_table){
   season <- attr(projection_table, "season")
   week <- attr(projection_table, "week")
 
-  select(player_table, id, first_name, last_name, team, position, age, exp) %>%
-    inner_join(projection_table, by = "id") %>%
+  players = dplyr::select(player_table, id, first_name, last_name, team, position, age, exp)
+
+  dplyr::left_join(projection_table, players, by = "id") %>%
     `attr<-`(which = "season", season) %>%
     `attr<-`(which = "week", week) %>%
     `attr<-`(which = "lg_type", lg_type)
 }
+
+#' New, lighter, projections_table function
+#'
+#' Keeping until we transition in the app
+projections_table2 = projections_table
+
+
+
+
+
